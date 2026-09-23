@@ -47,3 +47,21 @@ Not tested (out of scope / needs specific hardware, not required for the binding
 Pre-existing / benign (NOT introduced by this change; present on other in-tree
 realtek DSA boards): the "Failed to create a device link to DSA switch" and
 "rdinit=/init failed: -2, ignoring" dmesg lines.
+
+## board.d scripts (considered — none required)
+
+- **01_leds**: not required. On the realtek target `01_leds` has no per-board
+  entries at all (empty case) — every board defines its LEDs in the DTS, as
+  this device does.
+- **05_compat-version**: not required for a new device (it gates sysupgrade
+  compatibility across breaking changes; a new board starts at the current
+  version).
+- **02_network**: not required. Verified on hardware that the generic DSA
+  default generates a correct config (a `br-lan` bridge over all 26 ports plus
+  a DHCP `lan` interface) with no per-board entry. The per-board cases in the
+  realtek `02_network` are purely MAC-derivation, and the base MAC here is read
+  from the `u-boot-env` `ethaddr` via DTS nvmem (verified: the device comes up
+  with the correct factory MAC). Switch ports share the conduit MAC per the DSA
+  default. If per-port or label-derived MACs are wanted, a `02_network`
+  MAC-assignment entry matching the sibling 24-port zyxel/datto boards can be
+  added — noted as an optional reviewer preference, not a functional gap.
