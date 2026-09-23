@@ -1,0 +1,11 @@
+#!/bin/sh
+# Released firmware defaults for Open Mesh S24 / Datto S24-L.
+# LAN is a DHCP client so the switch pulls an address on the network.
+uci -q batch <<-EOI
+	set network.lan.proto='dhcp'
+	delete network.lan.ipaddr
+	delete network.lan.netmask
+	commit network
+EOI
+/etc/init.d/poe enable
+exit 0

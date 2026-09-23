@@ -1,0 +1,46 @@
+#!/bin/sh
+# PoE control for Open Mesh S24 / Datto S24-L (kernel PSE-MCU via ethtool netlink).
+# State persists in /etc/config/poe and is re-applied at boot by /etc/init.d/poe.
+CFG=poe
+show(){
+printf '%-6s %-9s %-17s %-5s %-8s %-4s\n' PORT ADMIN DETECTION CLASS POWER-W PRIO
+t=0; i=1
+while [ $i -le 24 ]; do
+o=$(ethtool --show-pse lan$i 2>/dev/null)
+a=$(echo "$o"|sed -n 's/.*Admin State: *//p')
+d=$(echo "$o"|sed -n 's/.*Detection Status: *//p')
+c=$(echo "$o"|sed -n 's/.*Power Class: *//p'); [ -z "$c" ] && c=-
+p=$(echo "$o"|sed -n 's/.*Actual Power: *//p')
+if [ -n "$p" ]; then t=$((t+p)); pw=$(awk "BEGIN{printf \"%.1f\",$p/1000}"); else pw=-; fi
+pr=$(echo "$o"|sed -n 's/^ *Priority: *//p')
+printf '%-6s %-9s %-17s %-5s %-8s %-4s\n' "lan$i" "${a:-?}" "${d:-?}" "$c" "$pw" "${pr:-?}"
+i=$((i+1))
+done
+awk "BEGIN{printf \"total draw: %.1f W\\n\",$t/1000}"
+}
+persist(){ # $1=port $2=key $3=val
+sec="port$1"
+uci -q get $CFG.$sec >/dev/null 2>&1 || { uci set $CFG.$sec=port; uci set $CFG.$sec.name="lan$1"; }
+uci set $CFG.$sec.$2="$3"; uci commit $CFG
+}
+apply(){
+def=$(uci -q get $CFG.global.default_state); [ -z "$def" ] && def=on
+i=1
+while [ $i -le 24 ]; do
+st=$(uci -q get $CFG.port$i.enable)
+[ -z "$st" ] && { [ "$def" = on ] && st=1 || st=0; }
+if [ "$st" = 1 ]; then ethtool --set-pse lan$i c33-pse-admin-control enable 2>/dev/null
+else ethtool --set-pse lan$i c33-pse-admin-control disable 2>/dev/null; fi
+lim=$(uci -q get $CFG.port$i.limit); [ -z "$lim" ] && lim=$(uci -q get $CFG.global.default_limit); [ -n "$lim" ] && ethtool --set-pse lan$i c33-pse-avail-pw-limit $lim 2>/dev/null
+i=$((i+1))
+done
+}
+case "$1" in
+""|show) show ;;
+on)  ethtool --set-pse lan$2 c33-pse-admin-control enable  && persist $2 enable 1 && echo "lan$2 PoE on";;
+off) ethtool --set-pse lan$2 c33-pse-admin-control disable && persist $2 enable 0 && echo "lan$2 PoE off";;
+limit) ethtool --set-pse lan$2 c33-pse-avail-pw-limit $3 && persist $2 limit $3 && echo "lan$2 limit ${3}mW";;
+reset) ethtool --set-pse lan$2 c33-pse-admin-control disable 2>/dev/null; sleep 3; ethtool --set-pse lan$2 c33-pse-admin-control enable 2>/dev/null; persist $2 enable 1; echo "lan$2 PoE reset";;
+apply) apply;;
+*) echo "usage: poe [show] | on N | off N | reset N | limit N <mW> | apply";;
+esac

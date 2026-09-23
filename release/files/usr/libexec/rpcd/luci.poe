@@ -1,0 +1,112 @@
+#!/bin/sh
+# rpcd backend for the LuCI PoE control page (Datto S24-L / Open Mesh S24).
+# Reads PoE state via `ethtool --show-pse lanN`; drives the already-baked
+# /usr/bin/poe wrapper for changes (which persists to /etc/config/poe).
+#
+# SECURITY: every value that reaches the shell / the poe wrapper is validated
+# against an allowlist first (port = int 1..24, state = on|off, limit = int
+# 0..30000). Nothing untrusted is ever interpolated into a command. See the
+# `set` handler.
+
+. /usr/share/libubox/jshn.sh
+
+# Emit {"error":"..."} and stop. rpcd still expects valid JSON on stdout.
+fail() {
+	json_init
+	json_add_string "error" "$1"
+	json_dump
+	exit 0
+}
+
+get_status() {
+	json_init
+	json_add_array "ports"
+	local i=1 total=0 o admin detection class power limit prio
+	while [ "$i" -le 24 ]; do
+		o=$(ethtool --show-pse "lan$i" 2>/dev/null)
+		# Field labels per the PSE-MCU ethtool output. Priority is anchored to
+		# the start of the line so it never matches "Max allowed priority".
+		admin=$(printf '%s\n' "$o" | sed -n 's/.*Admin State: *//p')
+		detection=$(printf '%s\n' "$o" | sed -n 's/.*Detection Status: *//p')
+		class=$(printf '%s\n' "$o" | sed -n 's/.*Power Class: *//p')
+		power=$(printf '%s\n' "$o" | sed -n 's/.*Actual Power: *//p')
+		limit=$(printf '%s\n' "$o" | sed -n 's/.*Available Power Limit: *//p')
+		prio=$(printf '%s\n' "$o" | sed -n 's/^[[:space:]]*Priority:[[:space:]]*//p')
+		# Keep only the leading integer of the numeric fields (drops any unit
+		# suffix like " (mW)"); default when the field is absent.
+		power=${power%%[!0-9]*}; [ -n "$power" ] || power=0
+		limit=${limit%%[!0-9]*}; [ -n "$limit" ] || limit=-1
+		prio=${prio%%[!0-9]*};   [ -n "$prio" ]  || prio=-1
+		total=$((total + power))
+		json_add_object
+		json_add_int    "port"      "$i"
+		json_add_string "admin"     "$admin"
+		json_add_string "detection" "$detection"
+		json_add_string "class"     "$class"
+		json_add_int    "power_mw"  "$power"
+		json_add_int    "limit_mw"  "$limit"
+		json_add_int    "priority"  "$prio"
+		json_close_object
+		i=$((i + 1))
+	done
+	json_close_array
+	json_add_int "total_mw" "$total"
+	_bw=$(uci -q get poe.global.budget_w 2>/dev/null); [ -z "$_bw" ] && _bw=250; json_add_int "budget_w" "$_bw"
+	json_dump
+}
+
+set_port() {
+	local input port state limit did=0
+	read -r input
+	# Extract with jsonfilter; an absent key yields an empty string, which lets
+	# us tell "limit 0" (present) apart from "no limit given" (absent).
+	port=$(printf '%s' "$input" | jsonfilter -e '@.port' 2>/dev/null)
+	state=$(printf '%s' "$input" | jsonfilter -e '@.state' 2>/dev/null)
+	limit=$(printf '%s' "$input" | jsonfilter -e '@.limit' 2>/dev/null)
+
+	# port: mandatory integer 1..24 (allowlist, length-bounded, range-checked).
+	case "$port" in ''|*[!0-9]*) fail "invalid port";; esac
+	[ "${#port}" -le 2 ] || fail "invalid port"
+	[ "$port" -ge 1 ] && [ "$port" -le 24 ] || fail "port out of range"
+
+	# state: optional, must be exactly on|off if present.
+	case "$state" in
+		on|off|reset|'') ;;
+		*) fail "invalid state";;
+	esac
+
+	# limit: optional, integer 0..30000 (PoE+ 30 W ceiling) if present.
+	if [ -n "$limit" ]; then
+		case "$limit" in *[!0-9]*) fail "invalid limit";; esac
+		[ "${#limit}" -le 5 ] || fail "invalid limit"
+		[ "$limit" -ge 0 ] && [ "$limit" -le 30000 ] || fail "limit out of range"
+	fi
+
+	# All args are now pure integers or the fixed strings on|off: safe to pass.
+	if [ -n "$state" ]; then
+		/usr/bin/poe "$state" "$port" >/dev/null 2>&1 || fail "poe $state failed"
+		did=1
+	fi
+	if [ -n "$limit" ]; then
+		/usr/bin/poe limit "$port" "$limit" >/dev/null 2>&1 || fail "poe limit failed"
+		did=1
+	fi
+	[ "$did" -eq 1 ] || fail "no action requested"
+
+	json_init
+	json_add_boolean "ok" 1
+	json_dump
+}
+
+case "$1" in
+	list)
+		printf '{ "status": {}, "set": { "port": 0, "state": "", "limit": 0 } }'
+	;;
+	call)
+		case "$2" in
+			status) get_status;;
+			set)    set_port;;
+			*)      fail "unknown method";;
+		esac
+	;;
+esac

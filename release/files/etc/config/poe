@@ -1,0 +1,4 @@
+config poe 'global'
+	option default_state 'on'
+	option default_limit '30000'
+	option budget_w '250'

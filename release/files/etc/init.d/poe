@@ -1,0 +1,11 @@
+#!/bin/sh /etc/rc.common
+START=99
+boot() {
+	( n=0
+	  while [ $n -lt 90 ]; do
+	      ethtool --show-pse lan1 >/dev/null 2>&1 && break
+	      sleep 2; n=$((n+2))
+	  done
+	  /usr/bin/poe apply
+	) &
+}
