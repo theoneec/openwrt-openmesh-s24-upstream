@@ -24,3 +24,26 @@ Tested on hardware: boots SNAPSHOT r36407 from a persistent sysupgrade; 24 GbE +
 
 ## Base
 Generated against openwrt/openwrt master @ 14651b96832a9f9cef3b7bdcfb3dfecf9161ac58.
+
+## Validation (real hardware — SNAPSHOT r36407, RTL8382M rev C)
+
+Tested and confirmed:
+- Boots from a persistent sysupgrade; DHCP lease kept; no panic or boot-loop.
+- All 24 GbE + 2 SFP interfaces enumerate.
+- PoE via the in-tree Realtek PSE-MCU I2C driver: per-port enable/disable and
+  actual-power/class read-out via ethtool; a class-3 PD delivers ~5 W on a
+  copper port; per-port available-power-limit settable to 30000 mW (802.3at).
+- SFP (fixed-link): both cages configure the PCS/SerDes to 1000base-x and reach
+  the forwarding state with zero serdes/pcs/sfp errors in dmesg.
+- Base MAC read from the u-boot-env; stock U-Boot "boota" boots the
+  magic-stamped OpenWrt uImage unchanged.
+
+Not tested (out of scope / needs specific hardware, not required for the binding):
+- A negotiated optical link with a physical SFP module. The cages are declared
+  fixed-link 1000base-x precisely because they have no host-accessible module
+  EEPROM; a fixed-link port reports up unconditionally, so a module-negotiation
+  test is neither performed nor required to justify the fixed-link form.
+
+Pre-existing / benign (NOT introduced by this change; present on other in-tree
+realtek DSA boards): the "Failed to create a device link to DSA switch" and
+"rdinit=/init failed: -2, ignoring" dmesg lines.
