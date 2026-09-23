@@ -1,0 +1,499 @@
+From b698552bffd97bb007e6934d70ce9e2cf759ab59 Mon Sep 17 00:00:00 2001
+From: James Perez-Clifton <jamesperezclifton2016@gmail.com>
+Date: Wed, 23 Sep 2026 05:45:22 +0000
+Subject: [PATCH] realtek: add support for Open Mesh S24
+
+Add support for the Open Mesh S24 (also sold as the Datto S24-L), a
+24-port Gigabit PoE+ access switch. It is the 24-port RTL8382M sibling
+of the already-supported rtl8380 Open Mesh S8-L (datto,l8) and is built
+on the same Senao ODM platform.
+
+- SoC:      Realtek RTL8382M
+- RAM:      256 MiB
+- Flash:    SPI-NOR 32 MiB
+- Ethernet: 24x GbE copper (2x external RTL8218B on QSGMII plus the
+            RTL8382M internal octal PHY) + 2x 1G SFP
+- PoE:      24x 802.3at PoE+, 6x Broadcom BCM59111 quad-PSE behind an
+            I2C PoE MCU at 0x21, driven by the in-tree Realtek PSE-MCU
+            I2C transport (realtek,pse-mcu-gen1-smbus)
+- LEDs:     Power, fault, LAN/PoE-mode, PoE-max
+- Buttons:  Reset, Mode
+- Console:  UART, 115200 8n1
+
+Datapath
+--------
+
+The switch/MDIO/port layout is the architectural twin of the rtl8382
+Zyxel GS1900-24 boards: 24 copper ports over three octal PHYs (two
+external RTL8218B on QSGMII serdes plus the SoC internal octal PHY) and
+two SoC SerDes/PCS SFP ports (MAC ports 24 and 26 on serdes4/serdes5).
+
+The two SFP cages have no I2C path to the module: the stock firmware
+reads the module EEPROM over the Realtek SMI-indirect path, and the
+kernel sfp driver requires an "i2c-bus", so a managed sff,sfp node
+cannot bind. The cages are therefore declared as fixed-link 1000base-x
+on the PCS, the same way the in-tree rtl8380 tplink_sg2xxx and
+netgear_gs310tp-v1 boards handle their unmanaged SerDes SFP ports.
+
+PoE
+---
+
+The SoC bit-bangs I2C ("SMI group 6") on internal SoC GPIOs to a single
+PoE MCU at address 0x21, which fans out to six Broadcom BCM59111
+quad-PSE dies (24 ports). The MCU firmware is loaded by the stock
+U-Boot, so the stock loader is kept. It is bound by the in-tree Realtek
+PSE-MCU I2C driver (realtek,pse-mcu-gen1-smbus), the same transport and
+dialect as zyxel,gs1920-24hp-v2; each copper PHY is tied to its PSE PI.
+
+Flash / boot
+------------
+
+32 MiB SPI-NOR. The stock partition names and offsets are kept so the
+stock Senao U-Boot "boota" and the factory data stay intact; the base
+MAC is read from the "ethaddr" variable in the U-Boot environment via
+nvmem. The stock loader validates a uImage-layout header whose magic
+equals the vendor board-id word (0x00702400), so an OpenWrt uImage
+stamped with UIMAGE_MAGIC=0x00702400 boots under the unmodified stock
+"boota" with no bootcmd change. The two 0xd30000 runtime slots are
+mtd-concat'd into a single firmware region so kernel+rootfs+overlay
+fit, dropping stock A/B failover exactly as the S8-L sibling does.
+
+Installation
+------------
+
+1. Attach to the serial console (115200 8n1) and interrupt the stock
+   U-Boot.
+2. Boot an OpenWrt initramfs-kernel image over TFTP from the loader
+   (load it into RAM and bootm it).
+3. From the running OpenWrt initramfs, install with sysupgrade using the
+   squashfs-sysupgrade.bin image.
+
+Assisted-By: Claude Opus 4.8 <noreply@anthropic.com>
+Signed-off-by: James Perez-Clifton <jamesperezclifton2016@gmail.com>
+---
+ .../realtek/dts/rtl8382_openmesh_s24.dts      | 388 ++++++++++++++++++
+ target/linux/realtek/image/rtl838x.mk         |  13 +
+ 2 files changed, 401 insertions(+)
+ create mode 100644 target/linux/realtek/dts/rtl8382_openmesh_s24.dts
+
+diff --git a/target/linux/realtek/dts/rtl8382_openmesh_s24.dts b/target/linux/realtek/dts/rtl8382_openmesh_s24.dts
+new file mode 100644
+index 0000000000..52e37131ca
+--- /dev/null
++++ b/target/linux/realtek/dts/rtl8382_openmesh_s24.dts
+@@ -0,0 +1,388 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++
++#include "rtl838x.dtsi"
++
++/ {
++	compatible = "openmesh,s24", "datto,s24-l", "realtek,rtl838x-soc";
++	model = "Open Mesh S24";
++
++	aliases {
++		label-mac-device = &ethernet0;
++		led-boot = &led_power;
++		led-failsafe = &led_fault;
++		led-running = &led_power;
++		led-upgrade = &led_power;
++	};
++
++	memory@0 {
++		device_type = "memory";
++		reg = <0x0 0x10000000>;
++	};
++
++	leds {
++		pinctrl-names = "default";
++		pinctrl-0 = <&pinmux_disable_sys_led>;
++		compatible = "gpio-leds";
++
++		led_power: led-0 {
++			function = LED_FUNCTION_POWER;
++			color = <LED_COLOR_ID_GREEN>;
++			gpios = <&gpio1 3 GPIO_ACTIVE_LOW>;
++		};
++
++		led_lan_mode: led-1 {
++			label = "green:lan-mode";
++			gpios = <&gpio1 4 GPIO_ACTIVE_HIGH>;
++		};
++
++		led_fault: led-2 {
++			function = LED_FUNCTION_FAULT;
++			color = <LED_COLOR_ID_AMBER>;
++			gpios = <&gpio1 2 GPIO_ACTIVE_LOW>;
++		};
++
++		led_poe_max: led-3 {
++			label = "amber:poe-max";
++			gpios = <&gpio0 12 GPIO_ACTIVE_LOW>;
++		};
++	};
++
++	keys {
++		compatible = "gpio-keys";
++
++		reset {
++			label = "reset";
++			gpios = <&gpio0 11 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++		};
++
++		mode {
++			label = "mode";
++			gpios = <&gpio0 13 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_LIGHTS_TOGGLE>;
++		};
++	};
++
++	gpio-restart {
++		compatible = "gpio-restart";
++		gpios = <&gpio1 0 GPIO_ACTIVE_LOW>;
++		open-source;
++	};
++
++	/*
++	 * PoE MCU: the SoC bit-bangs I2C ("SMI group 6") on internal SoC GPIOs
++	 * (SCK = gpio0 line 1, SDA = gpio0 line 0) to a single PoE MCU at 0x21
++	 * which fans out to 6x Broadcom BCM59111 quad-PSE (24 ports). The MCU
++	 * firmware is loaded by the stock U-Boot at boot, so keep the stock
++	 * loader. Bound by the in-tree Realtek PSE-MCU I2C driver, the same
++	 * transport/dialect used by zyxel,gs1920-24hp-v2.
++	 */
++	i2c0: i2c-gpio-0 {
++		compatible = "i2c-gpio";
++		sda-gpios = <&gpio0 0 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
++		scl-gpios = <&gpio0 1 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
++		i2c-gpio,delay-us = <2>;
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		pse: ethernet-pse@21 {
++			compatible = "openmesh,s24-pse", "realtek,pse-mcu-gen1-smbus";
++			reg = <0x21>;
++
++			pse-pis {
++				#address-cells = <1>;
++				#size-cells = <0>;
++
++				PSE_PI(0)
++				PSE_PI(1)
++				PSE_PI(2)
++				PSE_PI(3)
++				PSE_PI(4)
++				PSE_PI(5)
++				PSE_PI(6)
++				PSE_PI(7)
++				PSE_PI(8)
++				PSE_PI(9)
++				PSE_PI(10)
++				PSE_PI(11)
++				PSE_PI(12)
++				PSE_PI(13)
++				PSE_PI(14)
++				PSE_PI(15)
++				PSE_PI(16)
++				PSE_PI(17)
++				PSE_PI(18)
++				PSE_PI(19)
++				PSE_PI(20)
++				PSE_PI(21)
++				PSE_PI(22)
++				PSE_PI(23)
++			};
++		};
++	};
++
++	/*
++	 * The two stock RUNTIME slots are concatenated into a single OpenWrt
++	 * firmware region (see &spi0) so kernel+rootfs+overlay fit; this drops
++	 * stock A/B failover, as the upstream S8-L (datto,l8) sibling also does.
++	 * ih-magic 0x00702400 is the S24-L uImage board-id word: an OpenWrt
++	 * uImage stamped with UIMAGE_MAGIC=0x00702400 boots under the unmodified
++	 * stock "boota".
++	 */
++	virtual_flash {
++		compatible = "mtd-concat";
++		devices = <&fwconcat0>, <&fwconcat1>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "firmware";
++				reg = <0x0 0x1a60000>;
++				compatible = "openwrt,uimage", "denx,uimage";
++				openwrt,ih-magic = <0x00702400>;
++			};
++		};
++	};
++};
++
++/*
++ * External RTL8231 GPIO/LED expander on the SoC indirect (aux) MDIO bus.
++ * Its integrated LED controller is unused: the 24 copper port LEDs are
++ * driven by the RTL8382M internal serial-LED block.
++ */
++&mdio_aux {
++	status = "okay";
++
++	gpio1: expander@0 {
++		compatible = "realtek,rtl8231";
++		reg = <0>;
++
++		gpio-controller;
++		#gpio-cells = <2>;
++		gpio-ranges = <&gpio1 0 0 37>;
++
++		led-controller {
++			compatible = "realtek,rtl8231-leds";
++			status = "disabled";
++		};
++	};
++};
++
++&uart1 {
++	status = "okay";
++};
++
++/*
++ * Port / PHY / MDIO map (vendor portConf_8382_24ge_2gef):
++ *   ext RTL8218B #1 -> MDIO 0..7    (lan1..lan8)
++ *   internal octal  -> MDIO 8..15   (lan9..lan16)
++ *   ext RTL8218B #2 -> MDIO 16..23  (lan17..lan24)
++ * MDIO address == MAC port id; all 24 copper PHYs are C22 on mdio_bus0.
++ */
++&mdio_bus0 {
++	PHY_C22(0, 0)
++	PHY_C22(1, 1)
++	PHY_C22(2, 2)
++	PHY_C22(3, 3)
++	PHY_C22(4, 4)
++	PHY_C22(5, 5)
++	PHY_C22(6, 6)
++	PHY_C22(7, 7)
++
++	PHY_C22(8, 8)
++	PHY_C22(9, 9)
++	PHY_C22(10, 10)
++	PHY_C22(11, 11)
++	PHY_C22(12, 12)
++	PHY_C22(13, 13)
++	PHY_C22(14, 14)
++	PHY_C22(15, 15)
++
++	PHY_C22(16, 16)
++	PHY_C22(17, 17)
++	PHY_C22(18, 18)
++	PHY_C22(19, 19)
++	PHY_C22(20, 20)
++	PHY_C22(21, 21)
++	PHY_C22(22, 22)
++	PHY_C22(23, 23)
++};
++
++&switch0 {
++	ethernet-ports {
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		/* ext RTL8218B #1 - QSGMII on serdes0 + serdes1 */
++		SWITCH_PORT_SDS(0, 1, 0, 0, qsgmii)
++		SWITCH_PORT_SDS(1, 2, 0, 1, qsgmii)
++		SWITCH_PORT_SDS(2, 3, 0, 2, qsgmii)
++		SWITCH_PORT_SDS(3, 4, 0, 3, qsgmii)
++		SWITCH_PORT_SDS(4, 5, 1, 0, qsgmii)
++		SWITCH_PORT_SDS(5, 6, 1, 1, qsgmii)
++		SWITCH_PORT_SDS(6, 7, 1, 2, qsgmii)
++		SWITCH_PORT_SDS(7, 8, 1, 3, qsgmii)
++
++		/* RTL8382M internal octal PHY - direct SoC ports */
++		SWITCH_PORT(8, 9, internal)
++		SWITCH_PORT(9, 10, internal)
++		SWITCH_PORT(10, 11, internal)
++		SWITCH_PORT(11, 12, internal)
++		SWITCH_PORT(12, 13, internal)
++		SWITCH_PORT(13, 14, internal)
++		SWITCH_PORT(14, 15, internal)
++		SWITCH_PORT(15, 16, internal)
++
++		/* ext RTL8218B #2 - QSGMII on serdes2 + serdes3 */
++		SWITCH_PORT_SDS(16, 17, 2, 0, qsgmii)
++		SWITCH_PORT_SDS(17, 18, 2, 1, qsgmii)
++		SWITCH_PORT_SDS(18, 19, 2, 2, qsgmii)
++		SWITCH_PORT_SDS(19, 20, 2, 3, qsgmii)
++		SWITCH_PORT_SDS(20, 21, 3, 0, qsgmii)
++		SWITCH_PORT_SDS(21, 22, 3, 1, qsgmii)
++		SWITCH_PORT_SDS(22, 23, 3, 2, qsgmii)
++		SWITCH_PORT_SDS(23, 24, 3, 3, qsgmii)
++
++		/*
++		 * SFP cages (MAC ports 24 and 26, front lan25/lan26) on the SoC
++		 * SerDes/PCS. The module EEPROM is only reachable over the vendor
++		 * SMI-indirect path, not I2C, and the kernel sfp driver requires
++		 * an "i2c-bus"; there is therefore no manageable sff,sfp node.
++		 * The ports are declared as fixed-link 1000base-x on the PCS, the
++		 * same way the in-tree tplink_sg2xxx / netgear_gs310tp rtl838x
++		 * boards handle their unmanaged SerDes SFP ports.
++		 */
++		port@24 {
++			reg = <24>;
++			label = "lan25";
++			pcs-handle = <&serdes4 0>;
++			phy-mode = "1000base-x";
++
++			fixed-link {
++				speed = <1000>;
++				full-duplex;
++			};
++		};
++
++		port@26 {
++			reg = <26>;
++			label = "lan26";
++			pcs-handle = <&serdes5 0>;
++			phy-mode = "1000base-x";
++
++			fixed-link {
++				speed = <1000>;
++				full-duplex;
++			};
++		};
++
++		/* CPU / management port */
++		port@28 {
++			ethernet = <&ethernet0>;
++			reg = <28>;
++			phy-mode = "internal";
++
++			fixed-link {
++				speed = <1000>;
++				full-duplex;
++			};
++		};
++	};
++};
++
++&ethernet0 {
++	nvmem-cells = <&macaddr_ubootenv_ethaddr 0>;
++	nvmem-cell-names = "mac-address";
++};
++
++/*
++ * 32 MiB SPI-NOR. Stock names/offsets are kept so the stock U-Boot "boota"
++ * and factory data (BDINFO holds the base MAC in "ethaddr") stay intact.
++ * The two 0xd30000 RUNTIME slots are mtd-concat'd (see virtual_flash).
++ */
++&spi0 {
++	status = "okay";
++
++	flash@0 {
++		compatible = "jedec,spi-nor";
++		reg = <0>;
++		spi-max-frequency = <10000000>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "u-boot";
++				reg = <0x0 0x80000>;
++				read-only;
++			};
++			partition@80000 {
++				label = "u-boot-env";
++				reg = <0x80000 0x10000>;
++
++				nvmem-layout {
++					compatible = "u-boot,env";
++
++					macaddr_ubootenv_ethaddr: ethaddr {
++						#nvmem-cell-cells = <1>;
++					};
++				};
++			};
++			partition@90000 {
++				label = "u-boot-env2";
++				reg = <0x90000 0x10000>;
++			};
++			partition@a0000 {
++				label = "cfg";
++				reg = <0xa0000 0x400000>;
++			};
++			partition@4a0000 {
++				label = "log";
++				reg = <0x4a0000 0x100000>;
++			};
++			fwconcat0: partition@5a0000 {
++				label = "runtime";
++				reg = <0x5a0000 0xd30000>;
++			};
++			fwconcat1: partition@12d0000 {
++				label = "runtime2";
++				reg = <0x12d0000 0xd30000>;
++			};
++		};
++	};
++};
++
++/* PoE is on the 24 copper ports only: tie each copper PHY to its PSE PI. */
++&phy0  { pses = <&pse_pi0>; };
++&phy1  { pses = <&pse_pi1>; };
++&phy2  { pses = <&pse_pi2>; };
++&phy3  { pses = <&pse_pi3>; };
++&phy4  { pses = <&pse_pi4>; };
++&phy5  { pses = <&pse_pi5>; };
++&phy6  { pses = <&pse_pi6>; };
++&phy7  { pses = <&pse_pi7>; };
++&phy8  { pses = <&pse_pi8>; };
++&phy9  { pses = <&pse_pi9>; };
++&phy10 { pses = <&pse_pi10>; };
++&phy11 { pses = <&pse_pi11>; };
++&phy12 { pses = <&pse_pi12>; };
++&phy13 { pses = <&pse_pi13>; };
++&phy14 { pses = <&pse_pi14>; };
++&phy15 { pses = <&pse_pi15>; };
++&phy16 { pses = <&pse_pi16>; };
++&phy17 { pses = <&pse_pi17>; };
++&phy18 { pses = <&pse_pi18>; };
++&phy19 { pses = <&pse_pi19>; };
++&phy20 { pses = <&pse_pi20>; };
++&phy21 { pses = <&pse_pi21>; };
++&phy22 { pses = <&pse_pi22>; };
++&phy23 { pses = <&pse_pi23>; };
+diff --git a/target/linux/realtek/image/rtl838x.mk b/target/linux/realtek/image/rtl838x.mk
+index 884cb04a5b..d9d78fe747 100644
+--- a/target/linux/realtek/image/rtl838x.mk
++++ b/target/linux/realtek/image/rtl838x.mk
+@@ -297,6 +297,19 @@ define Device/netgear_gs310tp-v1
+ endef
+ TARGET_DEVICES += netgear_gs310tp-v1
+ 
++define Device/openmesh_s24
++  $(Device/uimage-rt-loader)
++  SOC := rtl8382
++  DEVICE_VENDOR := Open Mesh
++  DEVICE_MODEL := S24
++  DEVICE_ALT0_VENDOR := Datto
++  DEVICE_ALT0_MODEL := S24-L
++  UIMAGE_MAGIC := 0x00702400
++  IMAGE_SIZE := 13504k
++  DEVICE_PACKAGES += kmod-pse-realtek-mcu-i2c
++endef
++TARGET_DEVICES += openmesh_s24
++
+ define Device/panasonic_m16eg-pn28160k
+   SOC := rtl8382
+   IMAGE_SIZE := 16384k
+-- 
+2.43.0
+

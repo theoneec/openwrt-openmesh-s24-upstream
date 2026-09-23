@@ -1,0 +1,13 @@
+define Device/openmesh_s24
+  $(Device/uimage-rt-loader)
+  SOC := rtl8382
+  DEVICE_VENDOR := Open Mesh
+  DEVICE_MODEL := S24
+  DEVICE_ALT0_VENDOR := Datto
+  DEVICE_ALT0_MODEL := S24-L
+  UIMAGE_MAGIC := 0x00702400
+  IMAGE_SIZE := 13504k
+  DEVICE_PACKAGES += kmod-pse-realtek-mcu-i2c
+endef
+TARGET_DEVICES += openmesh_s24
+
