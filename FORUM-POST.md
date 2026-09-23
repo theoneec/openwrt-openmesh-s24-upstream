@@ -1,7 +1,6 @@
 # Add support for Open Mesh S24 / Datto S24-L (RTL8382M, realtek/rtl838x)
 
-<!-- OpenWrt forum post. Fill in the two <HANDLE> GitHub links, confirm the
-     Signed-off-by name, then paste into a "For Developers" thread. -->
+<!-- OpenWrt forum post for a "For Developers" thread. -->
 
 Hi all — I've written and hardware-validated full OpenWrt support for the
 **Open Mesh S24** (also sold as the **Datto Networking S24-L / DNS-L24**), a
@@ -10,8 +9,8 @@ current OpenWrt SNAPSHOT from a persistent sysupgrade, with working PoE and all
 ports up. I'd welcome a maintainer reviewing it for import.
 
 **Code (patch + submission notes + a ready-to-PR openwrt fork):**
-- Patch + full notes: https://github.com/<HANDLE>/openwrt-openmesh-s24-upstream
-- openwrt/openwrt fork, commit on `main`: https://github.com/<HANDLE>/openwrt
+- Patch + full notes: https://github.com/theoneec/openwrt-openmesh-s24-upstream
+- openwrt/openwrt fork with the commit (ready to PR): https://github.com/theoneec/openwrt/tree/add-openmesh-s24
 
 ## Device
 - SoC: Realtek RTL8382M rev C; 256 MB RAM; 32 MB SPI-NOR
