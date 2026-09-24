@@ -84,7 +84,8 @@ deliberately flashed a wrong one. We stamp the matching value regardless.
 |---|---|
 | E24v3 | `0x00702202` |
 | E48 | `0x00702201` |
-\1
+| **S24-L / L24** | **`0x00702400`** |
+
 > **Warning:** `boota` **erases 4 KB — the image header — from a partition that
 > fails to boot**, and flips the active-partition selector
 > (`common/cmd_bootm.c:1660-1663` in the vendor source). One failed attempt
