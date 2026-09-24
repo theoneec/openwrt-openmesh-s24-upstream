@@ -22,7 +22,10 @@ This repo holds the **exact patch OpenWrt expects** for a new-device contributio
 >   <https://github.com/halmartin/avalon-l2switch-realtek-rtk8382> — *"GPL
 >   source code for the Datto E8, E24v3, and E48 switches"*, also linked from
 >   the OpenWrt wiki GPL archive page. **We did our reverse engineering by
->   disassembling vendor binaries without knowing it existed.** Start there.
+>   disassembling vendor binaries without knowing it existed** — though the
+>   archive turns out to be incomplete (U-Boot and a near-vanilla kernel only;
+>   no PoE stack, no board configuration). See
+>   [`docs/UPSTREAM-STATUS.md`](docs/UPSTREAM-STATUS.md).
 >
 > This work is offered **into** that effort, not against it. Detail, credits
 > and our known naming delta: **[`docs/UPSTREAM-STATUS.md`](docs/UPSTREAM-STATUS.md)**.
@@ -70,14 +73,22 @@ RTL8382M rev C, 256 MB; 24× GbE (3× RTL8218B); 2× SFP (SerDes, fixed-link 100
 
 ## `.bix` board magic family
 The `.bix` container is a standard U-Boot legacy uImage with the magic word
-replaced by the board ID. There is **no cryptographic signature** — only the
-magic, the header CRC and the payload CRC.
+replaced by a per-board identifier. There is **no cryptographic signature** in
+either the boot path or the TFTP upgrade path — **the header CRC and the
+payload CRC are what is definitely validated** (confirmed in the vendor GPL
+source). Whether the shipped loader also enforces the magic is **unverified**:
+that source compiles `image_check_magic()` out by default, and we have never
+deliberately flashed a wrong one. We stamp the matching value regardless.
 
 | Device | `UIMAGE_MAGIC` |
 |---|---|
 | E24v3 | `0x00702202` |
 | E48 | `0x00702201` |
-| **S24-L / L24** | **`0x00702400`** |
+\1
+> **Warning:** `boota` **erases 4 KB — the image header — from a partition that
+> fails to boot**, and flips the active-partition selector
+> (`common/cmd_bootm.c:1660-1663` in the vendor source). One failed attempt
+> destroys that slot's image.
 
 ## Stock firmware: console access
 - **Interrupt autoboot with `pac`** — the letters `a`, `p`, `c` in any order.

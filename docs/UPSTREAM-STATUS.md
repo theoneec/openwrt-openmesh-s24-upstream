@@ -40,9 +40,52 @@ What is already done there:
 the OpenWrt wiki's GPL source archive page.
 
 Our reverse engineering was done by **disassembling the vendor binaries**, with
-no idea this existed. Anyone picking this work up should start from the
-archive. (Its own caveat: the drop is incomplete and does not build as
-shipped, so disassembly-derived facts still have corroborating value.)
+no idea this existed.
+
+**But it is incomplete, so do not clone 553 MB expecting the whole system.** It
+ships only `u-boot-2011.12/` and a near-vanilla `kernel/uClinux/`. Its own
+top-level Makefile shows the real build had four components — `KERNEL_DIR`,
+`LOADER_DIR`, `SDK_DIR`, `TURNKEY_DIR` — and the last three are absent.
+`kernel/uClinux/user/switch/` holds only a Makefile, `arch/mips/` has
+`Kconfig.realtek` but no `realtek/` board directory, and twelve symlinks dangle
+into a build machine's home directory. **The PoE stack, the fan init and the
+board configuration are not in it**, so for those the disassembly is still the
+only source. It does confirm **Senao** as the ODM and names the OEM model list
+(`oms8 oms24 oms48 s24-l s8-l`, plus `p-` and `ps-` variants).
+
+What it does give, from `u-boot-2011.12/`, is independent confirmation of a few
+things and a correction to one of our claims:
+
+- **No cryptographic signature anywhere** — the boot path checks
+  magic / header-CRC / data-CRC / arch, and the TFTP upgrade path
+  (`cmd_upgrade.c:339-350`) checks header CRC then data CRC.
+- **The boot-partition selector lives in SYSINFO, not the U-Boot environment**
+  (`include/turnkey/sysinfo.h:39-46`: `bootpartition`, `dualfname0`, `boardid`,
+  `flsheras`, `pwdrecov`, `factdflt`, `resetdflt`).
+- **Dual-image geometry matches ours** — a leftover Senao `.config.old` has
+  `CONFIG_DUAL_IMAGE=y`, `CONFIG_DUAL_IMAGE_PARTITION_SIZE=0xD30000`,
+  `CONFIG_ENV_OFFSET=0x80000`, `CONFIG_BOOTCOMMAND="boota"`,
+  `CONFIG_FLASH_LAYOUT_TYPE4=y`.
+- **`boota` erases 4 KB — the image header — from a partition that fails to
+  boot**, and flips the active-partition selector
+  (`common/cmd_bootm.c:1660-1663`). One failed attempt destroys that slot's
+  image. This was an inference; it is now fact, and it is the single most
+  useful operational warning in the archive.
+- **Correction — we should not have implied the loader validates the magic.**
+  `image.h:192-196` and `:485-492` compile `image_check_magic()` out unless
+  `CONFIG_ENABLE_IH_MAGIC_NUMBER_CHK` is defined, and that symbol appears
+  nowhere in the archive. The header CRC and data CRC are definitely checked;
+  magic enforcement on the shipped loader is **unverified**.
+- **We cannot explain the magic encoding either.** `image.h:178-190` documents
+  it as [b31..b12] Chip ID / [b11..b04] Vendor ID / [b03..b00] Product ID, set
+  from `CONFIG_IH_MAGIC_NUMBER` (the archive's one real example is `83800000`,
+  the RTL8380 chip ID). Our values do not fit — `0x00702400` would give a chip
+  ID of `0x00702`, which is not a Realtek chip ID. The **values** are read from
+  real flash dumps; the scheme is Senao's and we are not going to guess at it.
+- **The sibling 1G-fibre board file**
+  `rtl8382m_8218b_intphy_8218b_2fib_1g_demo_board.c` places its two fibre ports
+  at mac_id **24 and 26**, matching this board — which is what makes the
+  E24v3's **24 and 36** a genuine per-board difference rather than a typo.
 
 ## Naming convention
 
@@ -101,8 +144,10 @@ see its `docs/UPSTREAM-STATUS.md`.
   | **S24-L / L24** | **`0x00702400`** |
 
   The container is a standard U-Boot legacy uImage with the magic word
-  replaced. There is **no cryptographic signature** — only the magic, the
-  header CRC and the payload CRC.
+  replaced by a per-board identifier. There is **no cryptographic signature**;
+  the **header CRC and payload CRC** are what is definitely validated, and
+  magic enforcement on the shipped loader is unverified — see the archive
+  section above.
 - **svanheule's guidance on images**, answering hmartin: the **Zyxel GS1900
   recipes** are the pattern — the initramfs/factory image must stay within the
   original `0xd30000` partition, while the sysupgrade image may span the merged
